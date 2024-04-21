@@ -1,0 +1,154 @@
+<!DOCTYPE html>
+<html lang="en">
+
+<head>
+    <meta charset="UTF-8">
+    <link rel="stylesheet" href="https://stackpath.bootstrapcdn.com/bootstrap/4.5.2/css/bootstrap.min.css">
+    <script src="https://cdn.jsdelivr.net/npm/echarts/dist/echarts.min.js"></script>
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Real-time Emotion Detection</title>
+</head>
+
+<body>
+    <h1>Real-time Emotion Detection</h1>
+    <div class="container-fluild">
+        <div class="row">
+            <div class="col-md-6 ">
+                <canvas id="canvas" width="640" height="480"></canvas>
+            </div>
+            <div class="col-md-6 ">
+                <div id="container" style="height: 40%"></div>
+                <div id="emotionCounts"></div>
+                <div id="barChart" style="height: 300px;"></div>
+            </div>
+        </div>
+    </div>
+
+    <script>
+        // Initialize emotionCounts object
+        let emotionCounts = {};
+
+        // Initialize ECharts chart for pie chart
+        const myChart = echarts.init(document.getElementById('container'), null, {
+            renderer: 'canvas',
+            useDirtyRect: false
+        });
+
+        // Initialize ECharts chart for bar chart
+        const barChart = echarts.init(document.getElementById('barChart'), null, {
+            renderer: 'canvas',
+            useDirtyRect: false
+        });
+
+        // Chart options for pie chart
+        const pieChartOption = {
+            tooltip: {
+                trigger: 'item'
+            },
+            legend: {
+                top: '5%',
+                left: 'center'
+            },
+            series: [{
+                name: 'Emotion Distribution',
+                type: 'pie',
+                radius: ['40%', '70%'],
+                avoidLabelOverlap: false,
+                itemStyle: {
+                    borderRadius: 10,
+                    borderColor: '#fff',
+                    borderWidth: 2
+                },
+                label: {
+                    show: false,
+                    position: 'center'
+                },
+                emphasis: {
+                    label: {
+                        show: true,
+                        fontSize: 40,
+                        fontWeight: 'bold'
+                    }
+                },
+                labelLine: {
+                    show: false
+                },
+                data: [] // Data will be populated dynamically
+            }]
+        };
+
+        // Set initial chart options for pie chart
+        if (pieChartOption && typeof pieChartOption === 'object') {
+            myChart.setOption(pieChartOption);
+        }
+
+        // Chart options for bar chart
+        const barChartOption = {
+            xAxis: {
+                type: 'category',
+                data: ['Sad', 'Happy', 'Angry', 'Neutral', 'Fear', 'Surprise']
+            },
+            yAxis: {
+                type: 'value'
+            },
+            series: [{
+                data: [0, 0, 0, 0, 0, 0],
+                type: 'bar'
+            }]
+        };
+
+        // Set initial chart options for bar chart
+        if (barChartOption && typeof barChartOption === 'object') {
+            barChart.setOption(barChartOption);
+        }
+
+        // WebSocket connection
+        const ws = new WebSocket('ws://127.0.0.1:8000/faces/ws');
+
+        // WebSocket message event listener
+        ws.onmessage = function (event) {
+            const data = JSON.parse(event.data);
+
+            // Decode base64 frame data and display image
+            const img = new Image();
+            img.src = 'data:image/jpeg;base64,' + data.frame;
+            img.onload = function () {
+                const canvas = document.getElementById('canvas');
+                const context = canvas.getContext('2d');
+                context.clearRect(0, 0, canvas.width, canvas.height);
+                context.drawImage(img, 0, 0, canvas.width, canvas.height);
+            };
+
+            // Update emotion counts and charts
+            const emotion = data.emotion;
+            emotionCounts[emotion] = emotionCounts[emotion] ? emotionCounts[emotion] + 1 : 1;
+            updateCharts();
+        };
+
+        // Function to update pie and bar charts with current emotion counts
+        function updateCharts() {
+            myChart.setOption({
+                series: [{
+                    data: Object.entries(emotionCounts).map(([emotion, count]) => ({
+                        value: count,
+                        name: emotion
+                    }))
+                }]
+            });
+
+            barChart.setOption({
+                series: [{
+                    data: Object.values(emotionCounts)
+                }]
+            });
+        }
+
+        // Handle window resize
+        window.addEventListener('resize', function () {
+            myChart.resize();
+            barChart.resize();
+        });
+    </script>
+</body>
+
+</html>
