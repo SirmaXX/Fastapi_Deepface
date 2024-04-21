@@ -1,5 +1,5 @@
 # Realtime emotion detection service
-Built with FastApi,DeepL,echarts   
+Built with FastApi,DeepFace,echarts   
 
 Its answer for "how to entegrated haarcascade model to ui"
 
