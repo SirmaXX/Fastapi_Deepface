@@ -1,70 +1,124 @@
-
-from fastapi import APIRouter,Depends, Request,HTTPException
-from flask import jsonify
-from datetime import datetime
+from fastapi import APIRouter, WebSocket, HTTPException, WebSocketDisconnect
 import cv2
-from fastapi import FastAPI, WebSocket,APIRouter
-from fastapi.responses import HTMLResponse
 from pydantic import BaseModel
 from deepface import DeepFace
 import asyncio
 import base64
 
-
-
-
 facesroute = APIRouter(responses={404: {"description": "Not found"}})
 
 # Load face cascade classifier
-face_cascade = cv2.CascadeClassifier(cv2.data.haarcascades + 'haarcascade_frontalface_default.xml')
+face_cascade = cv2.CascadeClassifier(
+    cv2.data.haarcascades + "haarcascade_frontalface_default.xml"
+)
 
 # Start capturing video
 cap = cv2.VideoCapture(0)
 
+# check cap
+if not cap.isOpened():
+    raise HTTPException(status_code=500, detail="Cannot open camera")
+
 class Frame(BaseModel):
     frame: bytes
 
+
+# Global flag to check WebSocket status
+ws_connected = False
+
+# State to hold the last detection results
+last_faces = []
+last_emotion = "none"
+
+
 async def detect_emotion(websocket: WebSocket):
-    try:
-        while True:
-            # Capture frame-by-frame
+    global last_faces, last_emotion
+
+    if not cap.isOpened():
+        raise HTTPException(status_code=500, detail="Cannot open camera")
+
+    async def recognition_loop():
+        global last_faces, last_emotion
+        frame_count = 0
+        recognition_interval = 10  # Perform recognition every 10 frames
+
+        while ws_connected:
             ret, frame = cap.read()
+            if not ret:
+                await asyncio.sleep(0.1)
+                continue
 
-            # Convert frame to grayscale
-            gray_frame = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
+            frame_count += 1
+            if frame_count % recognition_interval == 0:
+                gray_frame = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
+                faces = face_cascade.detectMultiScale(
+                    gray_frame, scaleFactor=1.1, minNeighbors=5, minSize=(30, 30)
+                )
+                if len(faces) > 0:
+                    last_faces = faces
+                else:
+                    last_faces = []
 
-            # Detect faces in the frame
-            faces = face_cascade.detectMultiScale(gray_frame, scaleFactor=1.1, minNeighbors=5, minSize=(30, 30))
+                if len(last_faces) > 0:
+                    for x, y, w, h in last_faces:
+                        face_roi = frame[y : y + h, x : x + w]
+                        result2 = DeepFace.find(
+                            face_roi,
+                            db_path="references",
+                            enforce_detection=False,
+                            silent=True, 
+                        )
+                        last_emotion = (
+                            result2[0]["identity"][0].split(".")[0].split("\\")[1]
+                            if len(result2) > 0
+                            and "identity" in result2[0]
+                            and len(result2[0]["identity"]) > 0
+                            else "none"
+                        )
+            if len(last_faces) > 0: 
+                for x, y, w, h in last_faces:
+                    # Draw bounding box and emotion on the frame
+                    cv2.rectangle(frame, (x, y), (x + w, y + h), (255, 0, 0), 2)
+                    cv2.putText(
+                        frame,
+                        last_emotion,
+                        (x, y - 10),
+                        cv2.FONT_HERSHEY_SIMPLEX,
+                        0.9,
+                        (255, 0, 0),
+                        2,
+                    )
 
-            for (x, y, w, h) in faces:
-                # Extract the face ROI (Region of Interest)
-                face_roi = frame[y:y + h, x:x + w]
+            _, buffer = cv2.imencode(".jpg", frame)
+            frame_base64 = base64.b64encode(buffer).decode()
+            await websocket.send_json({"frame": frame_base64, "emotion": last_emotion})
 
-                # Perform emotion analysis on the face ROI
-                result = DeepFace.analyze(face_roi, actions=['emotion'], enforce_detection=False)
+            await asyncio.sleep(0.033)  # Approx 30 FPS
 
-                # Determine the dominant emotion
-                emotion = result[0]['dominant_emotion']
+    asyncio.create_task(recognition_loop())
 
-                # Draw rectangle around face and label with predicted emotion
-                cv2.rectangle(frame, (x, y), (x + w, y + h), (0, 0, 255), 2)
-                cv2.putText(frame, emotion, (x, y - 10), cv2.FONT_HERSHEY_SIMPLEX, 0.9, (0, 0, 255), 2)
-
-                # Convert frame to JPEG format and then encode to base64
-                _, buffer = cv2.imencode('.jpg', frame)
-                frame_base64 = base64.b64encode(buffer).decode()
-
-                # Send frame bytes along with emotion through WebSocket
-                await websocket.send_json({'frame': frame_base64, 'emotion': emotion})
+    try:
+        while ws_connected:
+            await asyncio.sleep(1)
     except WebSocketDisconnect:
-        # Release video capture when WebSocket is disconnected
         cap.release()
+
 
 @facesroute.get("/")
 async def index():
     return {"message": "Welcome to Real-time Emotion Detection"}
 
+
 @facesroute.websocket("/ws")
 async def websocket_endpoint(websocket: WebSocket):
+    global ws_connected
+    if ws_connected:
+        await websocket.close(code=1008, reason="WebSocket is already connected")
+        return
+
+    ws_connected = True
     await websocket.accept()
-    await detect_emotion(websocket)
+    try:
+        await detect_emotion(websocket)
+    finally:
+        ws_connected = False
